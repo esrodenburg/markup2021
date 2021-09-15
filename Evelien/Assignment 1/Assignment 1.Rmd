@@ -1,0 +1,75 @@
+---
+title: "Assignment 1 - Evelien"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Setting up
+```{r - Working directory}
+setwd("~/Documents/GitHub/markup2021/Evelien/Assignment 1")
+```
+```{r - Libraries}
+library(dplyr)
+library(ggplot2)
+library(knitr)
+```
+
+### Generate 100 samples from a standard normal distribution and calculate statistics for the mean
+```{r - Generate sampels & calculate statistics }
+sampinfo <- function(n, keepers){
+  keepers <- c("Mean", "Bias", "SE",  "Lower", "Upper")
+  dat <- data.frame(matrix(NA, 0, length(keepers))) # create storage for the output
+  
+  for(i in 1:n){
+    ## Drawing the samples ##
+    samp <- rnorm(1000, 0, 1) # 1000 samples from a normal distribution with mean 0 and sd 1
+    
+    ## Calculating statistics ## 
+    M <- mean(samp)
+    B <- M - 0 # Bias = sample mean - population mean 
+    SE <- 1/sqrt(n)
+    DF <- n - 1
+    LB <- M - (qt(.975, DF)*SE)
+    UB <- M + (qt(.975, DF)*SE)
+    V <- c(M, B, SE, LB, UB) # extract wanted values 
+    dat <- rbind(dat, V)
+  }
+  colnames(dat) <- keepers
+  return(dat) # return the results 
+} 
+
+set.seed(1998) # setting a seed for reproducibility 
+results <- sampinfo(1000)
+(colMeans(results)) # print the column means 
+```
+
+### Creating a table for every value that contains all simulated samples for which the CI does not contain the population value 
+```{r - Table}
+## Add column 
+results <- results %>% 
+  mutate(covered = Lower < 0 & 0 < Upper)
+colMeans(results) # 95.3% of the samples cover the true population value. 
+
+T <- results[!results$covered,]
+(kable(T))
+```
+
+### Creating a plot 
+Creating a plot that demonstrates the following: 
+“A replication of the procedure that generates a 95% confidence interval that is centered around the sample mean would cover the population value at least 95 out of 100 times” (Neyman, 1934)
+
+```{r - Plot}
+limits <- aes(ymax = results$Upper, ymin = results$Lower)
+ggplot(results, aes(y=Mean, x = 1:1000, colour = covered)) + 
+  geom_point(size = 2) +
+  geom_errorbar(aes(ymax = Upper, ymin = Lower)) + 
+  geom_text(label = row.names(results))+
+  geom_hline(aes(yintercept = 0), color = "black", size = 1) + 
+  xlab("Simulations") +
+  ylab("Means and 95% Confidence Intervals for Simulated Samples")
+```
