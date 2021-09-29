@@ -1,0 +1,130 @@
+---
+title: "Assignment 2"
+Author: "Evelien" 
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Simulating data 
+```{r - Simulating data}
+
+## Setting a seed 
+set.seed(1)
+
+## Simulating the data 
+group1 <- rnorm(30, 1, 2) # 100 data points with a mean of 0 1 and sd of 2. 
+group2 <- rnorm(30, 0, 2) # 100 data points with a mean of 0 and sd of 2. 
+
+## Visualizing the data 
+hist(group1, col = "blue", breaks = 10, main = "Histogram of groups 1 and 2", xlab = "")
+hist(group2, add = TRUE, breaks = 10, col = "green")
+
+
+## Some descriptive statistics 
+mean(group1)
+sd(group1)
+mean(group2)
+sd(group2)
+```
+The data are not really normally distributed (although I did simulate data with rnorm), but this is because the sample size in each group is quite small. For example, a sample size of 100 or 1000 would result in these histograms: 
+```{r}
+set.seed(1)
+## Simulating the data - 100 
+group1.a <- rnorm(100, 1, 2) # 100 data points with a mean of 0 1 and sd of 2. 
+group2.a <- rnorm(100, 0, 2) # 100 data points with a mean of 0 and sd of 2. 
+
+## Visualizing the data - 100 
+hist(group1.a, col = "blue", breaks = 10, main = "Histogram of groups 1 and 2 (100)", xlab = "")
+hist(group2.a, add = TRUE, breaks = 10, col = "green")
+
+## Simulating the data - 1000 
+group1.b <- rnorm(1000, 1, 2) # 100 data points with a mean of 0 1 and sd of 2. 
+group2.b <- rnorm(1000, 0, 2) # 100 data points with a mean of 0 and sd of 2. 
+
+## Visualizing the data - 1000 
+hist(group1.b, col = "blue", breaks = 10, main = "Histogram of groups 1 and 2 (100)", xlab = "")
+hist(group2.b, add = TRUE, breaks = 10, col = "green")
+```
+These are better approximations to normality (especially when we have 1000 data points in each group). 
+
+### Running a first t-test 
+```{r - t-test}
+## Running an independent-samples t-test to see if there is a significant difference in means between the two groups. 
+t.test(group1, group2, paired = FALSE, var.equal = TRUE, conf.level = 0.95)
+```
+
+This is a significant result, but does this mean that there is truly a significant difference in the means, or did I just get lucky? 
+
+### Power analysis 
+```{r - Power analysis}
+## Setting a seed again 
+set.seed(1)
+
+nsims <- 1000 # 1000 simulations 
+pvals <- c() # Storage 
+
+for(i in 1:nsims){
+  group1 <- rnorm(30, 1, 2) # simulate group 1 
+  group2 <- rnorm(30, 0, 2) # simulate group 2 
+  pvals[i] <- t.test(group1, group2, paired = FALSE, var.equal = TRUE, conf.level = 0.95)$p.value # run t test and extract p-values 
+}
+
+mean(pvals < .05) # proportion of p-values that are smaller than alpha = 0.05 (power)
+```
+
+This is a very low power, so that means I just got lucky in my previous t-test.
+
+Say I want to increase my power to 80%, or even 95%, what sample size would be required? 
+
+### Sample size calculation 
+#### Function 
+```{r - sample size calculation}
+## Setting a seed again 
+set.seed(1)
+
+## Function for sample size calculation 
+powerfun <- function(power){
+  ## Some bookkeeping: 
+  n_sims <- 1000 # number of simulations 
+  i <- 2
+  power_at_n <- c(0) # Storage for power
+  p_vals <- c() # Storage for p values 
+  n <- 30 # Sample size 
+  while(power_at_n[i-1] < power){
+  for(sim in 1:n_sims){
+    
+    ## Simulate data: 
+    group1 <- rnorm(n,1,2) # simulate group 1
+    group2 <- rnorm(n,0,2) # simulate group 2
+    
+    ## T-test: 
+    p_vals[sim] <- t.test(group1, group2, paired = FALSE, var.equal = TRUE, conf.level = 0.9)$p.value # run t-test and extract the p-value
+  }
+    ## Power for each sample size: 
+    power_at_n[i] <- mean(p_vals < .10) # check power (i.e. proportion of p-values that are smaller than alpha-level of .10)
+    
+    ## Some more bookkeeping :
+    n <- n+1 # increase sample-size by 1
+    i <- i+1 # increase index of the while-loop by 1 to save power to vector
+}
+power_at_n <- power_at_n[-1] # delete first 0 from the vector
+return(n-1)
+}
+```
+
+#### Results 
+```{r}
+## Results: 
+powerfun(.80)
+powerfun(.95)
+```
+
+We would need 50 participants in each group for a power of 80% (so 100 in total) and 82 participants in each group for a power of 95% (so 164 in total). 
+
+### Session info 
+```{r}
+sessionInfo()
+```
