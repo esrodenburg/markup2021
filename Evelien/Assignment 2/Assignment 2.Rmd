@@ -83,7 +83,7 @@ Say I want to increase my power to 80%, or even 95%, what sample size would be r
 #### Function 
 ```{r - sample size calculation}
 ## Setting a seed again 
-set.seed(1)
+#set.seed(1)
 
 ## Function for sample size calculation 
 powerfun <- function(power){
@@ -118,6 +118,7 @@ return(n-1)
 #### Results 
 ```{r}
 ## Results: 
+set.seed(1)
 powerfun(.80)
 powerfun(.95)
 ```
@@ -128,3 +129,15 @@ We would need 50 participants in each group for a power of 80% (so 100 in total)
 ```{r}
 sessionInfo()
 ```
+
+### Reproducing with different seed 
+```{r}
+set.seed(25)
+powerfun(.80)
+powerfun(.95)
+
+set.seed(300)
+powerfun(.80)
+powerfun(.95)
+```
+These give slightly different numbers, but it is still close to the number obtained with the other seed. 
