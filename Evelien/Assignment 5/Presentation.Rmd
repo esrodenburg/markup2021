@@ -1,0 +1,317 @@
+---
+title: "Using Bayesian Methods to Predict Statistics Exam Scores"
+author: "Evelien Rodenburg"
+date: "1/4/2022"
+output: ioslides_presentation
+logo: uulogo.png
+bibliography: assignment.bib
+reference-section-title: References 
+---
+
+```{r setup file, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+```{r setup data, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#### Working directory #### 
+setwd("~/Documents/MSBBSS/Jaar 1/Semester 2/Bayesian Statistics") # Setting a working directory
+
+#### Loading required libraries #### 
+library(knitr) # create nice looking output 
+library(foreign) # reading spss data into R
+library(brms) # used for bayes factor (model comparison)
+library(bayestestR) # used for bayes factor (model comparison)
+library(bain) # used for bayes factor (hypothesis testing)
+library(plotly)
+library(ggplot2)
+library(DT)
+library(reactable)
+#### Loading and preparing the data 
+# Loading the data
+dat <- read.spss("FEARadapted.sav", use.missings = TRUE, to.data.frame = TRUE)
+
+# Replace missing values by column means  
+dat[] <- lapply(dat, function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+```
+
+## Introduction
+:::: {style="display: flex;"}
+
+::: {}
+- Statistics exam data from 60 students 
+- 30 male
+- 30 female 
+:::
+
+::: {}
+- confidence level
+- fear of statistics
+- depression level 
+- age
+:::
+
+::::
+
+```{r descriptives, echo = FALSE}
+output <- matrix(0, 3, 6)
+rownames(output) <- c("Exam score", "Confidence level", "Fear of statistics") # naming the rows 
+colnames(output) <- c( "Min", "First Quartile", " Median", "Mean", "Third Quartile", 
+                      "Max") # naming the columns 
+
+dat_selected <- dat[, c("exam", "confid", "fost")]
+output[,1] <- apply(dat_selected, 2, min) # column for means 
+output[,2] <- apply(dat_selected, 2, quantile, 0.25) # column for sd's 
+output[,3] <- apply(dat_selected, 2, quantile, 0.50) # column for 2.5 percentile 
+output[,4] <- apply(dat_selected, 2, mean) # column for median 
+output[,5] <- apply(dat_selected, 2, quantile, 0.75) # column for 97.5 percentile 
+output[,6] <- apply(dat_selected, 2, max) 
+kable(output, digits = 2) 
+```
+
+## Introduction 
+```{r, echo = FALSE}
+dat_selected <- round(dat_selected, digits = 0)
+datatable(dat_selected, options = list(pageLength = 5))
+```
+
+## Introduction 
+There seems to be an association between confidence level and exam scores, and fear of statistics and exam scores [@onwuegbuzie2003statistics]. 
+
+
+
+## Introduction 
+
+```{r correlations, echo = FALSE}
+p <- ggplot(dat, aes(x = fost, y = exam)) + 
+  geom_point()
+ggplotly(p)
+
+```
+
+## Introduction
+```{r correlations part 2, echo = FALSE}
+o <- ggplot(dat, aes(x = confid, y = exam)) + 
+  geom_point()
+ggplotly(o)
+```
+
+## Regression Model
+
+The following regression model was used: 
+$$
+exam\ scores_i = \beta_0 + \beta_1*confidence \ level_i \\+ \beta_2* fear\ of \ statistics_i + residual_i
+$$
+
+Or in R code: 
+```{r regression code, eval = FALSE}
+OLS <- lm(dat$exam ~ dat$confidc + dat$fostc, data = dat)
+```
+
+## Convergence of the Metropolis-Hastings Algorithm 
+
+```{r gibbs sampler, include = FALSE}
+#### Centering predictors #### 
+dat$fostc <- dat$fost - mean(dat$fost) # mean centering 
+dat$confidc <- dat$confid - mean(dat$confid) # mean centering 
+
+#### Gibbs sampler with MH step for beta1 ####
+# Fitting the regression model for initial values and comparison #
+OLS <- lm(dat$exam ~ dat$confidc + dat$fostc, data = dat)
+summary(OLS) # results 
+
+# Priors - uninformative #
+mu0 <- 0
+s20 <- 1000
+tau0 <- 1/s20
+a <- 0.01
+b <- 0.01 
+
+# Initial values - using coefficients from OLS #
+beta0 <- OLS$coefficients[1]
+beta1 <- OLS$coefficients[2]
+beta2 <- OLS$coefficients[3]
+s2 <- var(OLS$residuals)
+
+# Specifying number of iterations #
+n.iters <- 100000 # MH often has trouble converging, so many iterations are used here 
+# Creating storage #
+keepers <- matrix(0, n.iters, 4)  
+colnames(keepers) <- c("beta0", "beta1", "beta2", "sigma2") 
+keepers[1,] <- c(beta0, beta1, beta2, s2)
+# Bookkeeping # 
+Y <- as.matrix(dat$exam)
+X <- as.matrix(dat$confidc)
+Z <- as.matrix(dat$fostc)
+n <- length(Y)
+set.seed(1998) # setting a seed for reproducible results 
+# Start MCMC # 
+for(iter in 2:n.iters){
+  #__________
+  # sample beta0 | beta1,s2,Y  (Gibbs)
+  A  <- sum(Y - X*beta1 - Z*beta2)/s2 + 1/s20 # previous values for betas and s are used
+  B  <- n/s2 + mu0/s20
+  beta0 <- rnorm(1, A/B, 1/sqrt(B)) # updated value for beta0 
+  #__________
+  # sample beta1 | beta0,s2,Y  (Metropolis-Hastings)
+  b_1t <- beta1 # current value of beta1 
+  bstar <- rnorm(1, beta1, .1) # sample new value for beta1 from a normal distribution 
+  likelihood <- function(b1){ # likelihood of the data 
+    pred <- beta0 + b1*X + beta2*Z # predicted outcome
+    singlelikelihoods <- dnorm(Y, mean = pred, sd = sqrt(s2), log = TRUE) # sample from a normal distribution with mean = predicted outcome
+    sumll <- sum(singlelikelihoods) # take the sum over the likelihoods 
+    return(sumll)
+  }
+  prior <- function(b1){ # prior distribution 
+    b1prior <- dnorm(b1, 0.0001, log = TRUE)
+    return(b1prior)
+  }
+  posterior <- function(b1){ # posterior distribution 
+    return(likelihood(b1) + prior(b1))
+  }
+  poa <- exp(posterior(bstar) - posterior(b_1t)) # calculate probability of acceptance 
+  ref <- runif(1,0,1) # sample reference value from uniform distribution 
+  if (ref < poa){beta1 <- bstar # if reference value is smaller than probability of acceptance: accept bstar
+  } else {beta1 <- b_1t # otherwise, retain current value for beta1
+  }
+  #__________
+  # sample beta2 | beta0,s2,Y  (Gibbs)
+  A  <- sum(Z*(Y - beta0 - X*beta1))/s2 + 1/s20
+  B  <- sum(Z^2)/s2 + mu0/s20
+  beta2 <- rnorm(1, A/B, 1/sqrt(B)) # updated value for beta2
+  #__________
+  # sample s2 | beta0,beta1,Y  (Gibbs)
+  A  <- n/2 + a
+  B  <- sum((Y - beta0 - X*beta1 - Z*beta2)^2)/2 + b
+  s2 <- 1/rgamma(1, A, B) # updated value for sigma2
+  #__________
+  # keep track of the results
+  keepers[iter,] <- c(beta0, beta1, beta2, s2)
+} ## End MCMC!!!
+
+keepersmin <- keepers[-(1:20000),] # remove first 20.000 rows as burn-in 
+```
+
+```{r, include = FALSE}
+# First, run a second chain 
+# Initial values - using different values than previous chain 
+beta02 <- 100
+beta12 <- 0.1
+beta22 <- 0.1
+s22 <- 100
+# Bookkeeping
+n.iters <- 100000 # MH often has trouble converging, so many iterations are used here 
+keepers2 <- matrix(0, n.iters, 4)
+colnames(keepers2) <- c("beta0", "beta1", "beta2", "sigma2")
+keepers2[1,] <- c(beta02, beta12, beta22, s22)
+set.seed(1998) # setting a seed for reproducible results 
+# Start MCMC 
+for(iter in 2:n.iters){
+  #__________
+  # sample beta0 | beta1,s2,Y  (Gibbs)
+  A  <- sum(Y - X*beta12 - Z*beta22)/s22 + 1/s20
+  B  <- n/s22 + mu0/s20
+  beta02 <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample beta1 | beta0,s2,Y  (Metropolis-Hastings)
+  b_1t <- beta12 # current value of beta1 
+  bstar <- rnorm(1, beta12, .1) # sample new value for beta1 from a normal distribution 
+  likelihood <- function(b){ 
+    pred <- beta02 + b*X + beta22*Z
+    singlelikelihoods <- dnorm(Y, mean = pred, sd = sqrt(s22), log = TRUE) 
+    sumll <- sum(singlelikelihoods)
+    return(sumll)
+  }
+  prior <- function(b){
+    b1prior <- dnorm(b, 0.0001, log = TRUE)
+    return(b1prior)
+  }
+  posterior <- function(b){
+    return(likelihood(b) + prior(b))
+  }
+  poa <- exp(posterior(bstar) - posterior(b_1t)) # calculate prob of acceptance 
+  ref <- runif(1,0,1) # sample reference value from uniform distribution 
+  if (ref < poa){beta12 <- bstar
+  } else {beta12 <- b_1t
+  }
+  #__________
+  # sample beta2 | beta0,s2,Y  (Gibbs)
+  A  <- sum(Z*(Y - beta02 - X*beta12))/s22 + 1/s20
+  B  <- sum(Z^2)/s22 + mu0/s20
+  beta22 <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample s2 | beta0,beta1,Y  (Gibbs)
+  A  <- n/2 + a
+  B  <- sum((Y - beta02 - X*beta12 - Z*beta22)^2)/2 + b
+  s22 <- 1/rgamma(1, A, B)
+  #__________
+  # keep track of the results
+  keepers2[iter,] <- c(beta02, beta12, beta22, s22)
+} ## End MCMC!!!
+keepersmin2 <- keepers2[-(1:20000),] # remove first 20.000 rows as burn-in
+
+```
+
+```{r, echo = FALSE}
+# Plot both chains 
+par(mfrow = c(2, 2)) # showing 4 plots at the same time 
+plot(keepersmin[,1], type = "s", xlab = "Iteration", ylab = bquote(beta[0]), main = "Trace plot intercept")
+lines(keepersmin2[,1], type = "s", col = "lavender")
+plot(keepersmin[,2], type = "s", xlab = "Iteration", ylab = bquote(beta[1]), main = "Trace plot beta1")
+lines(keepersmin2[,2], type = "s", col = "lavender")
+plot(keepersmin[,3], type = "s", xlab = "Iteration", ylab = bquote(beta[2]), main = "Trace plot beta2")
+lines(keepersmin2[,3], type = "s", col = "lavender")
+plot(keepersmin[,4], type = "s", xlab = "Iteration", ylab = bquote(s^2), main = "Trace plot variance")
+lines(keepersmin2[,4], type = "s", col = "lavender")
+```
+
+## Estimates and Intervals 
+
+```{r estimates, echo = FALSE}
+# Organize output in a matrix #
+output <- matrix(0, 4, 5)
+rownames(output) <- c("Intercept", "Confidence", "Fear of statistics", "sigma2") # naming the rows 
+colnames(output) <- c("Mean", "SD", "Q025", "Median", "Q975") # naming the columns 
+output[,1] <- apply(keepersmin, 2, mean) # column for means 
+output[,2] <- apply(keepersmin, 2, sd) # column for sd's 
+output[,3] <- apply(keepersmin, 2, quantile, 0.025) # column for 2.5 percentile 
+output[,4] <- apply(keepersmin, 2, quantile, 0.50) # column for median 
+output[,5] <- apply(keepersmin, 2, quantile, 0.975) # column for 97.5 percentile 
+kable(output, digits = 3) # parameter estimates
+```
+
+## Testing Normality of the Outcome Variable Using a Posterior Predictive Check
+When using a pppv, a replicated dataset is created. This is the dataset that would be expected if the null model is true, so if the residuals are normally distributed. The pppv tests whether the replicated data have a more extreme test statistic than the original data. 
+
+```{r, include = FALSE}
+keepersminshort <- keepersmin[-(1:70000),] # only using 10000 rows to save time  
+ 
+observed.diff <- rep(NA, nrow(keepersminshort)) # storage
+replicated.diff <- rep(NA, nrow(keepersminshort)) # storage 
+set.seed(1998) # replicable results 
+for(i in 1:nrow(keepersminshort)){
+  ## Observed ## 
+  y <- keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3] # calculate observed outcome
+  residuals.obs <- (Y - y) # calculate observed residuals, difference between true outcome and predicted outcome
+  observed.diff[i] <- abs(mean(residuals.obs) - median(residuals.obs)) # difference between mean and median 
+}
+for(i in 1:nrow(keepersminshort)){
+  ## Replicated ## 
+  replicated.y <- rnorm(n = n, mean = (keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3]), sd = sqrt(keepersminshort[i,4])) # this is the dataset that i would expect if the null model is true. 
+  replicated.residuals <- (replicated.y - (keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3])) # residuals under the null-model
+  replicated.diff[i] <- abs(mean(replicated.residuals) - median(replicated.residuals)) # difference between mean and median that would be expected under the null model
+}
+
+# 0/1 variable to see if the replicated data have a more extreme test statistic than the observed data. 
+(ppp.value <- mean(ifelse((replicated.diff > observed.diff), 1, 0))) # .2048, assumption not met 
+```
+
+## Testing Normality of the Outcome Variable Using a Posterior Predictive Check
+
+```{r, echo = FALSE}
+par(mfrow = c(1, 2))
+hist(replicated.diff) # histogram of replicated mean-median difference 
+hist(observed.diff) #histogram of observed mean-median difference 
+rm(keepersminshort) # not needed anymore, remove to save storage 
+```
+

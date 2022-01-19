@@ -1,0 +1,473 @@
+---
+title: "Markup Manuscript"
+author: "Evelien Rodenburg"
+date: "12/20/2021"
+output: html_document
+bibliography: assignment.bib
+reference-section-title: References 
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#### Working directory #### 
+setwd("~/Documents/MSBBSS/Jaar 1/Semester 2/Bayesian Statistics") # Setting a working directory
+
+#### Loading required libraries #### 
+library(knitr) # create nice looking output 
+library(foreign) # reading spss data into R
+library(brms) # used for bayes factor (model comparison)
+library(bayestestR) # used for bayes factor (model comparison)
+library(bain) # used for bayes factor (hypothesis testing)
+
+#### Loading and preparing the data 
+# Loading the data
+dat <- read.spss("FEARadapted.sav", use.missings = TRUE, to.data.frame = TRUE)
+
+# Replace missing values by column means  
+dat[] <- lapply(dat, function(x) ifelse(is.na(x), mean(x, na.rm = TRUE), x))
+```
+
+# Using Bayesian Methods to Predict Statistics Exam Scores 
+
+### Introduction
+Most students attending university are required to follow one or more statistics courses [@onwuegbuzie2003statistics]. Unfortunately, many students report experiencing high levels of anxiety surrounding statistics courses and exams. The dataset used in this report contains data on fear of statistics among students, their exam scores, and data on depression- and confidence levels of students. Additionally, there is data on student’s sex, age, and what additional statistics course they took to boost their confidence about statistics. The dataset contains data from 60 students in total, half of whom are males and half of whom are females. The additional statistics courses are math skills, basic statistics and a confidence building course. There are 20 students in each course. Descriptive statistics for all the continuous variables are displayed in Table 1. The dataset contained some missing values. The missing values were replaced by their variable means. 
+
+Table 1
+
+*Descriptive statistics for continuous variables*
+
+```{r, echo = FALSE}
+output <- matrix(0, 5, 6)
+rownames(output) <- c("Exam score", "Confidence level", "Fear of statistics", "Depression level",
+                      "Age") # naming the rows 
+colnames(output) <- c( "Min", "First Quartile", " Median", "Mean", "Third Quartile", 
+                      "Max") # naming the columns 
+
+dat_selected <- dat[, c("exam", "confid", "fost", "depress", "age")]
+output[,1] <- apply(dat_selected, 2, min) # column for means 
+output[,2] <- apply(dat_selected, 2, quantile, 0.25) # column for sd's 
+output[,3] <- apply(dat_selected, 2, quantile, 0.50) # column for 2.5 percentile 
+output[,4] <- apply(dat_selected, 2, mean) # column for median 
+output[,5] <- apply(dat_selected, 2, quantile, 0.75) # column for 97.5 percentile 
+output[,6] <- apply(dat_selected, 2, max) 
+kable(output, digits = 2) 
+```
+
+This report aims to answer the question of whether confidence level and fear of statistics are good predictors for scores on a statistics exam. This is done because research suggests that statistics self-efficacy is positively related to statistics exam scores [@finney2003self]. Therefore, it is hypothesized that higher scores for confidence level and lower scores for fear of statistics are related to higher exam scores.  
+
+Additionally, this report aims to investigate what improvements can be made to the first model. These improvements could be adding an interaction term, and testing whether another variable makes for a better predictor of exam scores. The improvements that are going to be tried will be based on the results of the initial model. The best model to predict statistics exam scores will be selected based on the Bayes Factor and Deviance Information Criterion (DIC). Finally, some differences between Bayesian- and frequentist approaches in the context of the current research question will be discussed. All analyses were carried out in RStudio version 3.0.4 [@R].  
+
+### Estimation of the Metropolis-Hastings Algorithm 
+The density of the data is suspected to be normal for both predictors and the outcome variable. Normally distributed variables should have means and medians that are equal [@mccabe1993instructor], which is the case for fear of statistics and confidence level. Therefore, normal priors are used for both predictors [@murphy2007conjugate]. A gamma prior will be used to estimate the precision of the model. The estimate that will be given for this is the inverse of the precision, so the variance. All priors that are used are uninformative. A Gibbs sampler was used to estimate the regression coefficients (the intercept and the slope of fear of statistics) and variance, and a Metropolis-Hastings (MH) step was added to estimate the slope coefficient for confidence level. An MH-algorithm samples from a probability distribution using the full joint density function [@lynch2007introduction]. A candidate value is obtained from a proposal density and using the candidate value and the previous accepted value, a probability of acceptance (poa) is calculated. This poa is compared to a value between 0 and 1 randomly sampled from a uniform distribution, and if the poa is larger than the value from the uniform distribution, the candidate value is accepted, otherwise, the previous accepted value is retained. Because Metropolis-Hastings algorithms can have slow convergence due to values being rejected, both predictors were centered and many iterations were used. Because the proposal density is not the density of interest in an MH-algorithm, often a symmetric proposal density is used [@lynch2007introduction]. In this report, a normal proposal density was used. 
+The following linear regression model was used:
+$$
+exam\ scores_i = \beta_0 + \beta_1*confidence \ level_i + \beta_2* fear\ of \ statistics_i + residual_i
+$$
+
+#### Assessment of Convergence 
+```{r, include = FALSE}
+#### Centering predictors #### 
+dat$fostc <- dat$fost - mean(dat$fost) # mean centering 
+dat$confidc <- dat$confid - mean(dat$confid) # mean centering 
+
+#### Gibbs sampler with MH step for beta1 ####
+# Fitting the regression model for initial values and comparison #
+OLS <- lm(dat$exam ~ dat$confidc + dat$fostc, data = dat)
+summary(OLS) # results 
+
+# Priors - uninformative #
+mu0 <- 0
+s20 <- 1000
+tau0 <- 1/s20
+a <- 0.01
+b <- 0.01 
+
+# Initial values - using coefficients from OLS #
+beta0 <- OLS$coefficients[1]
+beta1 <- OLS$coefficients[2]
+beta2 <- OLS$coefficients[3]
+s2 <- var(OLS$residuals)
+
+# Specifying number of iterations #
+n.iters <- 100000 # MH often has trouble converging, so many iterations are used here 
+# Creating storage #
+keepers <- matrix(0, n.iters, 4)  
+colnames(keepers) <- c("beta0", "beta1", "beta2", "sigma2") 
+keepers[1,] <- c(beta0, beta1, beta2, s2)
+# Bookkeeping # 
+Y <- as.matrix(dat$exam)
+X <- as.matrix(dat$confidc)
+Z <- as.matrix(dat$fostc)
+n <- length(Y)
+set.seed(1998) # setting a seed for reproducible results 
+# Start MCMC # 
+for(iter in 2:n.iters){
+  #__________
+  # sample beta0 | beta1,s2,Y  (Gibbs)
+  A  <- sum(Y - X*beta1 - Z*beta2)/s2 + 1/s20 # previous values for betas and s are used
+  B  <- n/s2 + mu0/s20
+  beta0 <- rnorm(1, A/B, 1/sqrt(B)) # updated value for beta0 
+  #__________
+  # sample beta1 | beta0,s2,Y  (Metropolis-Hastings)
+  b_1t <- beta1 # current value of beta1 
+  bstar <- rnorm(1, beta1, .1) # sample new value for beta1 from a normal distribution 
+  likelihood <- function(b1){ # likelihood of the data 
+    pred <- beta0 + b1*X + beta2*Z # predicted outcome
+    singlelikelihoods <- dnorm(Y, mean = pred, sd = sqrt(s2), log = TRUE) # sample from a normal distribution with mean = predicted outcome
+    sumll <- sum(singlelikelihoods) # take the sum over the likelihoods 
+    return(sumll)
+  }
+  prior <- function(b1){ # prior distribution 
+    b1prior <- dnorm(b1, 0.0001, log = TRUE)
+    return(b1prior)
+  }
+  posterior <- function(b1){ # posterior distribution 
+    return(likelihood(b1) + prior(b1))
+  }
+  poa <- exp(posterior(bstar) - posterior(b_1t)) # calculate probability of acceptance 
+  ref <- runif(1,0,1) # sample reference value from uniform distribution 
+  if (ref < poa){beta1 <- bstar # if reference value is smaller than probability of acceptance: accept bstar
+  } else {beta1 <- b_1t # otherwise, retain current value for beta1
+  }
+  #__________
+  # sample beta2 | beta0,s2,Y  (Gibbs)
+  A  <- sum(Z*(Y - beta0 - X*beta1))/s2 + 1/s20
+  B  <- sum(Z^2)/s2 + mu0/s20
+  beta2 <- rnorm(1, A/B, 1/sqrt(B)) # updated value for beta2
+  #__________
+  # sample s2 | beta0,beta1,Y  (Gibbs)
+  A  <- n/2 + a
+  B  <- sum((Y - beta0 - X*beta1 - Z*beta2)^2)/2 + b
+  s2 <- 1/rgamma(1, A, B) # updated value for sigma2
+  #__________
+  # keep track of the results
+  keepers[iter,] <- c(beta0, beta1, beta2, s2)
+} ## End MCMC!!!
+
+keepersmin <- keepers[-(1:20000),] # remove first 20.000 rows as burn-in 
+```
+
+```{r, include = FALSE}
+# First, run a second chain 
+# Initial values - using different values than previous chain 
+beta02 <- 100
+beta12 <- 0.1
+beta22 <- 0.1
+s22 <- 100
+# Bookkeeping
+n.iters <- 100000 # MH often has trouble converging, so many iterations are used here 
+keepers2 <- matrix(0, n.iters, 4)
+colnames(keepers2) <- c("beta0", "beta1", "beta2", "sigma2")
+keepers2[1,] <- c(beta02, beta12, beta22, s22)
+set.seed(1998) # setting a seed for reproducible results 
+# Start MCMC 
+for(iter in 2:n.iters){
+  #__________
+  # sample beta0 | beta1,s2,Y  (Gibbs)
+  A  <- sum(Y - X*beta12 - Z*beta22)/s22 + 1/s20
+  B  <- n/s22 + mu0/s20
+  beta02 <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample beta1 | beta0,s2,Y  (Metropolis-Hastings)
+  b_1t <- beta12 # current value of beta1 
+  bstar <- rnorm(1, beta12, .1) # sample new value for beta1 from a normal distribution 
+  likelihood <- function(b){ 
+    pred <- beta02 + b*X + beta22*Z
+    singlelikelihoods <- dnorm(Y, mean = pred, sd = sqrt(s22), log = TRUE) 
+    sumll <- sum(singlelikelihoods)
+    return(sumll)
+  }
+  prior <- function(b){
+    b1prior <- dnorm(b, 0.0001, log = TRUE)
+    return(b1prior)
+  }
+  posterior <- function(b){
+    return(likelihood(b) + prior(b))
+  }
+  poa <- exp(posterior(bstar) - posterior(b_1t)) # calculate prob of acceptance 
+  ref <- runif(1,0,1) # sample reference value from uniform distribution 
+  if (ref < poa){beta12 <- bstar
+  } else {beta12 <- b_1t
+  }
+  #__________
+  # sample beta2 | beta0,s2,Y  (Gibbs)
+  A  <- sum(Z*(Y - beta02 - X*beta12))/s22 + 1/s20
+  B  <- sum(Z^2)/s22 + mu0/s20
+  beta22 <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample s2 | beta0,beta1,Y  (Gibbs)
+  A  <- n/2 + a
+  B  <- sum((Y - beta02 - X*beta12 - Z*beta22)^2)/2 + b
+  s22 <- 1/rgamma(1, A, B)
+  #__________
+  # keep track of the results
+  keepers2[iter,] <- c(beta02, beta12, beta22, s22)
+} ## End MCMC!!!
+keepersmin2 <- keepers2[-(1:20000),] # remove first 20.000 rows as burn-in
+```
+Before assessing convergence, the first 20.000 rows were removed as burn-in period. Multiple methods should be used to assess convergence of a Gibbs sampler. Firstly, trace plots are assessed. For this, a second chain was used. The trace plots are displayed in Figure 1 and should resemble fat hairy caterpillars, and the trace plots for both chains should overlap. In the case of this model, the trace plots look good. 
+
+```{r, echo = FALSE}
+# Plot both chains 
+par(mfrow = c(2, 2)) # showing 4 plots at the same time 
+plot(keepersmin[,1], type = "s", xlab = "Iteration", ylab = bquote(beta[0]), main = "Trace plot intercept")
+lines(keepersmin2[,1], type = "s", col = "lavender")
+plot(keepersmin[,2], type = "s", xlab = "Iteration", ylab = bquote(beta[1]), main = "Trace plot beta1")
+lines(keepersmin2[,2], type = "s", col = "lavender")
+plot(keepersmin[,3], type = "s", xlab = "Iteration", ylab = bquote(beta[2]), main = "Trace plot beta2")
+lines(keepersmin2[,3], type = "s", col = "lavender")
+plot(keepersmin[,4], type = "s", xlab = "Iteration", ylab = bquote(s^2), main = "Trace plot variance")
+lines(keepersmin2[,4], type = "s", col = "lavender")
+```
+
+Figure 1
+
+*Trace plots* 
+
+Additionally, autocorrelation plots are useful in assessing convergence. An autocorrelation plot will start at some extreme value and should then quickly converge to zero. This is the case for beta0, beta2 and the variance (see Figure 2). Convergence for beta1 is slower, which is a known issue with Metropolis-Hastings algorithms, and an indication that more iterations might be needed for the model to fully converge. Finally, Monte-Carlo (MC) errors were assessed for the first chain. These are the result of dividing the standard deviation by the square root of the number of iterations. None of the MC-errors are larger than 5% of the standard deviation of the parameter estimate, so there is no indication of non-convergence in the MC errors. Note that for the MC errors, the full posterior sample was used, with burn-in still included. 
+
+```{r, echo = FALSE}
+par(mfrow = c(2, 2)) # showing 4 plots at the same time 
+acf(keepersmin[,1], type = "correlation", xlab = bquote(beta[0]), main = "Autocorrelation plot intercept") # should converge down to zero quickly 
+acf(keepersmin[,2], type = "correlation", xlab = bquote(beta[1]), main = "Autocorrelation plot beta1") # has trouble converging, known problem for MH algorithm 
+acf(keepersmin[,3], type = "correlation", xlab = bquote(beta[2]), main = "Autocorrelation plot beta2")
+acf(keepersmin[,4], type = "correlation", xlab = bquote(s^2), main = "Autocorrelation plot variance")
+```
+
+Figure 2 
+
+*Autocorrelation plots for chain 1* 
+
+It is important to know that one can never be sure that a model has converged. It can only be tested whether a model has not converged. This is part of the reason why it is so important to use multiple methods when assessing convergence.
+
+
+### Interpretation of Estimates and Intervals
+Both the mean, median, and complete central credibility interval of confidence level are positive (Table 2). Thus, there is good reason to believe that the coefficient beta1 is positive, which would mean that having a higher score on the confidence level variable would be related to having a higher exam score. The mean and median estimates for fear of statistics are both negative. The central credibility interval for fear of statistics, however, is centered around zero. Therefore, based on this model, it cannot be concluded whether the coefficient beta2 is positive or negative, and it can be concluded that the score one obtains on the fear of statistics variable probably does not affect the final exam score (Table 2).  
+
+Table 2
+
+*Estimates of the Metropolis-Hastings algorithm for predicting exam scores* 
+
+```{r, echo = FALSE}
+# Organize output in a matrix #
+output <- matrix(0, 4, 5)
+rownames(output) <- c("Intercept", "Confidence", "Fear of statistics", "sigma2") # naming the rows 
+colnames(output) <- c("Mean", "SD", "Q025", "Median", "Q975") # naming the columns 
+output[,1] <- apply(keepersmin, 2, mean) # column for means 
+output[,2] <- apply(keepersmin, 2, sd) # column for sd's 
+output[,3] <- apply(keepersmin, 2, quantile, 0.025) # column for 2.5 percentile 
+output[,4] <- apply(keepersmin, 2, quantile, 0.50) # column for median 
+output[,5] <- apply(keepersmin, 2, quantile, 0.975) # column for 97.5 percentile 
+kable(output, digits = 3) # parameter estimates 
+```
+
+```{r, include = FALSE}
+# MC error for the first chain # 
+# sd/sqrt(number of iterations) 
+# should be less than 5% of standard deviation 
+(mc.beta0 <- sd(keepers[,1])/sqrt(n.iters)) # less than 5%  
+(mc.beta1 <- sd(keepers[,2])/sqrt(n.iters)) # less than 5% 
+(mc.beta2 <- sd(keepers[,3])/sqrt(n.iters)) # less than 5% 
+(mc.sigma <- sd(keepers[,4])/sqrt(n.iters)) # less than 5% 
+rm(keepers) # not needed anymore, remove to save storage
+```
+
+### Testing Normality of the Outcome Variable Using a Posterior Predictive Check
+Multiple linear regression assumes that the residuals have a normal distribution [@schmidt2018linear]. Although assessing normality of the outcome variable is more commonly done in practice, assessing normality of residuals is more accurate statistically [@li2012linear]. There are multiple ways one could go about testing this. For example, one could look at histograms and QQ-plots. But if a Bayesian approach is preferred, a posterior predictive p value (pppv) can also be used to test this assumption. 
+
+When using a pppv, a replicated dataset is created. This is the dataset that would be expected if the null model is true, so if the residuals are normally distributed. The pppv tests whether the replicated data have a more extreme test statistic than the original data. If the pppv is .500, the test statistics are the same in both the replicated and original data. The test statistic that will be used here is the difference between the mean and median of the residuals. If the residuals are normally distributed, this difference should be close to zero. 
+
+Because a lot of iterations were used and calculating the pppv using every observation would take a very long time, only the last 10000 rows in the data were used to calculate the pppv. If the residuals are normally distributed, the pppv should be around .500. This is not the case in the current model (pppv = .205). This means that only 20.5% of the posterior predictive samples have a mean-median difference that is more extreme than the mean-median difference in the observed sample, and the assumption of normality of residuals is not met. This is also shown in Figure 3. Here, the plot for the replicate difference shows that zero is the most frequent value, whereas the most frequent value for the observed difference is somewhere between 1.5 and two. Transformations to the data can be done to ensure that the residuals follow a normal distribution, however, linear regression models are often robust to violations of this assumption and the transformations are often arbitrary [@schmidt2018linear]. 
+
+```{r, include = FALSE}
+keepersminshort <- keepersmin[-(1:70000),] # only using 10000 rows to save time  
+ 
+observed.diff <- rep(NA, nrow(keepersminshort)) # storage
+replicated.diff <- rep(NA, nrow(keepersminshort)) # storage 
+set.seed(1998) # replicable results 
+for(i in 1:nrow(keepersminshort)){
+  ## Observed ## 
+  y <- keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3] # calculate observed outcome
+  residuals.obs <- (Y - y) # calculate observed residuals, difference between true outcome and predicted outcome
+  observed.diff[i] <- abs(mean(residuals.obs) - median(residuals.obs)) # difference between mean and median 
+}
+for(i in 1:nrow(keepersminshort)){
+  ## Replicated ## 
+  replicated.y <- rnorm(n = n, mean = (keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3]), sd = sqrt(keepersminshort[i,4])) # this is the dataset that i would expect if the null model is true. 
+  replicated.residuals <- (replicated.y - (keepersminshort[i,1] + X*keepersminshort[i,2] + Z*keepersminshort[i,3])) # residuals under the null-model
+  replicated.diff[i] <- abs(mean(replicated.residuals) - median(replicated.residuals)) # difference between mean and median that would be expected under the null model
+}
+
+# 0/1 variable to see if the replicated data have a more extreme test statistic than the observed data. 
+(ppp.value <- mean(ifelse((replicated.diff > observed.diff), 1, 0))) # .2048, assumption not met 
+```
+
+```{r, echo = FALSE}
+par(mfrow = c(1, 2))
+hist(replicated.diff) # histogram of replicated mean-median difference 
+hist(observed.diff) #histogram of observed mean-median difference 
+rm(keepersminshort) # not needed anymore, remove to save storage 
+```
+
+Figure 3 
+
+*Mean-median difference histograms* 
+
+### Model Selection Using the Deviance Information Criterion 
+The Deviance Information Criterion (DIC) is a metric that can be used to compare Bayesian models. The DIC uses both the likelihood of the data evaluated at the posterior mean of the estimated parameters (Dhat), and the number of effective parameters. The number of effective parameters is the difference between the average likelihood of the data over the posterior distribution of the estimated parameters (Dbar) and Dhat. Thus, the DIC considers both complexity and fit. Because simpler and good fitting models are preferred, the model with the smallest DIC should be selected. Note that the DIC is a relative measure of model fit, meaning that it will not give an absolute value of model fit and can only be compared to other models that are fit to the same data. 
+
+```{r, include = FALSE}
+#### Model selection using the DIC #### 
+### DIC original model ### 
+## Dbar 
+Dbar.DIC <- rep(NA, nrow(keepersmin)) # storage 
+set.seed(1998)
+for(i in 1:nrow(keepersmin)){
+  Dbar.DIC[i] <- -2*sum(dnorm(Y, mean = (keepersmin[i,1] + keepersmin[i,2]*X + keepersmin[i,3]*Z), sd = sqrt(keepersmin[i,4]), log = T))
+} # average likelihood of the data over the posterior distribution of the estimated parameters 
+
+## Dhat 
+Dhat.DIC<- rep(NA, nrow(keepersmin)) # storage
+postmeanb0 <- mean(keepersmin[,1]) # posterior means of the estimated parameters 
+postmeanb1 <- mean(keepersmin[,2])
+postmeanb2 <- mean(keepersmin[,3])
+postmeansig <- mean(keepersmin[,4])
+set.seed(1998)
+Dhat.DIC <- -2*sum(dnorm(Y, mean = (postmeanb0 + postmeanb1*X + postmeanb2*Z), sd = sqrt(postmeansig), log = T)) # likelihood of the data evaluated at the posterior mean of the estimated parameters 
+(DIC.model <- mean(Dhat.DIC + 2*(Dbar.DIC - Dhat.DIC))) # Dhat + 2Pd (Pd = dbar-dhat) = 433.0124 
+
+### DIC Model 2 - Depression as predictor instead of fear of statistics ###
+## Gibbs sampler for new model ## 
+dat$depressc <- dat$depress - mean(dat$depress) # centering depression 
+OLS.depress <- lm(dat$exam ~ dat$confidc + dat$depressc, data = dat) # new regression model 
+beta2.depress <- OLS.depress$coefficients[3] # initial value for the coefficient of depression 
+W <- as.matrix(dat$depressc)
+n.itersg.depress <- 100000
+keepers.depress <- matrix(0, n.itersg.depress, 4)
+colnames(keepers.depress) <- c("beta0", "beta1", "beta2", "sigma2")
+keepers.depress[1,] <- c(beta0, beta1, beta2.depress, s2)
+set.seed(1998)
+for(iter in 2:n.iters){
+  #__________
+  # sample beta0 | beta1,s2,Y  (Gibbs)
+  A  <- sum(Y - X*beta1 - W*beta2.depress)/s2 + 1/s20
+  B  <- n/s2 + mu0/s20
+  beta0 <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample beta1 | beta0,s2,Y  (Metropolis-Hastings)
+  b_1t <- beta1 # current value of beta1 
+  bstar <- rnorm(1, beta1, .1) # sample new value for beta1 from a normal distribution 
+  likelihood <- function(b){ 
+    pred <- beta0 + b*X + beta2.depress*W
+    singlelikelihoods <- dnorm(Y, mean = pred, sd = sqrt(s2), log = TRUE) 
+    sumll <- sum(singlelikelihoods)
+    return(sumll)
+  }
+  prior <- function(b){
+    b1prior <- dnorm(b, 0.0001, log = TRUE)
+    return(b1prior)
+  }
+  posterior <- function(b){
+    return(likelihood(b) + prior(b))
+  }
+  poa <- exp(posterior(bstar) - posterior(b_1t)) # calculate prob of acceptance 
+  ref <- runif(1,0,1) # sample reference value from uniform distribution 
+  if (ref < poa){beta1 <- bstar
+  } else {beta1 <- b_1t
+  }
+  #__________
+  # sample beta2 | beta0,s2,Y  (Gibbs)
+  A  <- sum(W*(Y - beta0 - X*beta1))/s2 + 1/s20
+  B  <- sum(W^2)/s2 + mu0/s20
+  beta2.depress <- rnorm(1, A/B, 1/sqrt(B))
+  #__________
+  # sample s2 | beta0,beta1,Y  (Gibbs)
+  A  <- n/2 + a
+  B  <- sum((Y - beta0 - X*beta1 - W*beta2.depress)^2)/2 + b
+  s2 <- 1/rgamma(1, A, B)
+  #__________
+  # keep track of the results
+  keepers.depress[iter,] <- c(beta0, beta1, beta2.depress, s2)
+} ## End MCMC!!!
+
+keepersmin.depress <- keepers.depress[-(1:20000),] # remove first 20.000 rows as burn-in 
+
+## DIC for new model ## 
+## Dbar 
+Dbar.DIC.depress <- rep(NA, nrow(keepersmin.depress)) # storage 
+set.seed(1998)
+for(i in 1:nrow(keepersmin)){
+  Dbar.DIC.depress[i] <- -2*sum(dnorm(Y, mean = (keepersmin.depress[i,1] + keepersmin.depress[i,2]*X + keepersmin.depress[i,3]*W), sd = sqrt(keepersmin.depress[i,4]), log = T))
+}
+
+## Dhat 
+Dhat.DIC.depress<- rep(NA, nrow(keepersmin.depress)) # storage
+postmeanb0.depress <- mean(keepersmin.depress[,1])
+postmeanb1.depress <- mean(keepersmin.depress[,2])
+postmeanb2.depress <- mean(keepersmin.depress[,3])
+postmeansig.depress <- mean(keepersmin.depress[,4])
+set.seed(1998)
+Dhat.DIC.depress <- -2*sum(dnorm(Y, mean = (postmeanb0.depress + postmeanb1.depress*X + postmeanb2.depress*W), sd = sqrt(postmeansig.depress), log = T))
+(DIC.model.depress <- mean(Dhat.DIC.depress + 2*(Dbar.DIC.depress - Dhat.DIC.depress))) # Dhat + 2Pd = 433.1426
+
+```
+
+The original model had a DIC of 433.01. This value can now be used to compare other models. Because the coefficient for fear of statistics did not have a clear sign, this predictor was replaced. Another variable that was measured is depression. Students who experience depression have reported interference of depression symptoms with academic performance [@hysenbegasi2005impact]. Therefore, a model with confidence level and depression as predictors was compared to the original model. The DIC for this model was 433.15. A general rule of thumb is that differences smaller than two are not very meaningful, and in this case, there is a difference smaller than one. Thus, there is no real difference between the DICs of the original model and this new model. Based on the DIC alone, there is no reason to favor this new model over the original model and the original model can be retained. 
+
+Although the DIC is a widely used method of model selection, there are some issues that make the method less attractive [@spiegelhalter2014deviance]. These issues include a lack of consistency and a weak theoretical justification, among other issues. Alternatives for the DIC are the Watanabe Akaike Information Criterion (WAIC) and the Bayes factor, the latter of which shall be discussed in the next section. 
+
+### Model Selection and Hypothesis Testing Using the Bayes Factor
+#### Model Selection 
+As mentioned in the previous section, the Bayes Factor can be used for model selection. In this context, the question that is answered is “under which model are the observed data more probable?” [@makowski2019indices, @makowski2019bayestestr]. The Bayes factors answers this question by comparing the marginal likelihoods of two models. The brms and bayestestR packages are used for calculating the Bayes factors for multiple model comparisons [@makowski2019bayestestr, @burkner2017bayesian, @burkner2017advanced]. The same two models as in the previous question are compared (model 1 includes confidence and fear of statistics, model 2 includes confidence and depression), and in addition, a model with an interaction term between confidence and fear of statistics will be compared (model 3). 
+
+```{r, include = FALSE}
+intercept_only <- brm(exam ~ 1, data = dat, save_pars = save_pars(all = TRUE)) # create intercept-only model (no predictors) 
+orig <- brm(exam ~ confidc + fostc, data = dat, save_pars = save_pars(all = TRUE)) # create original model 
+mod_depress <- brm(exam ~ confidc + depressc, data = dat, save_pars = save_pars(all = TRUE)) # model with depression instead of fear of statistics 
+mod_interaction <- brm(exam ~ confidc + fostc + confidc*fostc, data = dat, 
+                       save_pars = save_pars(all = TRUE)) # model with interaction term added 
+
+comparison <- bayesfactor_models(orig, mod_depress, mod_interaction, 
+                                 denominator = intercept_only) # compare original model, model with depression as predictor and model with an interaction to the null model 
+comparison # print results of comparison 
+update_comparison <- update(comparison, reference = 1) # compare null model, model with depression as predictor and model with interaction to original model 
+update_comparison # print results of updated comparisons 
+as.matrix(comparison) # pairwise comparison 
+```
+
+First, all three models will be compared against a null model, so an intercept-only model. It is important to note that the Bayes factor is used here to find the best model among the models that are tested, just like was done when using the DIC. This does not mean that the true (or best fitting) model is among them.  Secondly, the two new models will be compared to the original model. Compared to the null model, all three models have a Bayes Factor >1000. Thus, as one might expect, all three models fit the data better than the null model. The original model provides the best fit for these data (out of these three models). Compared to the original model, model 2 has a Bayes Factor of 0.87 and model 3 has a Bayes Factor of 0.15. This indicates that the original model is the best fit for these data, in accordance with what was concluded based on comparisons to the null model, and the DIC in the previous question. In conclusion, out of these three models, the original model (with confidence and fear of statistics as predictors) fits the data best
+
+#### Informative Hypothesis Testing
+Because the original model is more probable according to the Bayes Factor, it is interesting to investigate the coefficient $\beta_2$ again. Earlier in the report, it was concluded that the sign of the coefficient $\beta_2$ was unclear, as the credibility interval was centered around zero. To investigate whether a positive, zero, or negative sign is more likely, the Bain package was used for informative hypothesis testing [@hoijtink2019tutorial]. Three comparisons were done, and for every test the coefficient for confidence level was assumed greater than 0. The tested hypotheses are compared to an unconstrained hypothesis. An unconstrained hypothesis means that no constraints are imposed on the means and that any ordering is equally likely [@van2010informative]. 
+
+```{r, include = FALSE}
+# Hypothesis testing # 
+coef(OLS) # seeing how the regression coefficients are called 
+results <- bain(OLS, "confidc > 0 & fostc > 0; confidc > 0 & fostc < 0", standardize = TRUE) # standardize = T to make comparisons possible 
+print(results) # gives bayes factor 
+summary(results, ci = 0.95) # gives confidence interval and parameter estimates 
+
+results2 <- bain(OLS, "confidc > 0 & fostc = 0; confidc > 0 & fostc < 0", standardize = TRUE)
+print(results2)
+summary(results2, ci = 0.95) 
+
+results3 <- bain(OLS, "confidc > 0 & fostc = 0; confidc > 0 & fostc > 0", standardize = TRUE)
+print(results3)
+summary(results3, ci = 0.95)
+```
+
+First, a negative coefficient for fear of statistics (H2) was tested against a positive coefficient (H1). The resulting Bayes factor is $\frac{2.821}{1.30} = 2.17$, indicating that support for a negative coefficient is 2.17 times larger than support for a positive coefficient, when comparing to an unconstrained hypothesis. Next, a negative coefficient (H2) was tested against a zero coefficient (H1). Here, the Bayes factor is $\frac{2.845}{10.212} = 0.28$, indicating a zero coefficient to be more likely for fear of statistics (or alternatively, support for a negative coefficient is 0.28 times the support for a zero coefficient). Finally, a positive coefficient (H2) was tested against a zero coefficient (H1), and the Bayes factor is $\frac{1.299}{10.212} = 0.13$, so a positive coefficient for H2 has 0.13 times the support a zero coefficient has compared to an unconstrained hypothesis. Based on these three hypothesis tests, it can be concluded that fear of statistics most likely has a zero coefficient and thus has no effect on exam scores, as was concluded earlier in the report. 
+
+### Comparison of Bayesian and Frequentist Approaches 
+```{r, include = FALSE}
+summary(OLS)
+```
+The first difference between Bayesian and frequentist methods that is evident in this report, is the way conclusions about predictors are drawn. Frequentist approaches often use p-values to reach a conclusion, while in this report, only the direction of the credibility interval was used. So, although the conclusion in this case would be the same, as confidence is a significant positive predictor in a frequentist regression analysis $(\beta = 1.27, t(57) = 5.52, p <.001)$ and fear of statistics is not $(\beta = -0.07, t(57) = -0.37, p = .716)$ ), the way that conclusion was reached does differ with regards to the parameters that are used. Additionally, an obvious difference in the creation of a posterior sample in this report, using prior distributions, which would not be done if frequentist approaches were used. This means that prior information could have been included in the analysis done in this report, which is not possible in a frequentist analysis. Since no prior information was used and the conclusions would be the same, in the case of this report, the method used would not have made much of a difference. Because frequentist statistics is often easier to understand, especially for those with a limited statistical background, it might have even been better to use a frequentist approach here to obtain parameter estimates.  
+
+Additionally, there is a difference in the way models are compared. In a frequentist framework, a chi-square test is often used for nested models, and the Akaike Information Criterion (AIC) and Bayesian Information Criterion (BIC, which, ironically, is not really Bayesian), are often used for non-nested models. In Bayesian frameworks, the DIC, WAIC and Bayes factor are commonly used. While all information criteria consider model complexity and model fit, they all do so differently.
+
+The final difference that will be discussed here concerns hypothesis testing. A frequentist approach would test one hypothesis against a null hypothesis, and either reject or maintain the null hypothesis. It would not be possible to test a directional hypothesis or even test whether the null hypothesis is true (Cohen, 1990). This report compared two hypotheses at a time, looking at which of the hypotheses was more plausible rather than rejecting a hypothesis based on a p-value. This means that while there might be no hard evidence for one final hypothesis, it was possible to test directional hypotheses, and it would have been possible to test a null hypothesis against an unconstrained hypothesis. This is a very large advantage of using a Bayesian approach. 
+
+Both Bayesian and frequentist approaches are valuable. Frequentist approaches make statistics more accessible, allowing for more research to be done. Bayesian approaches, on the other hand, aim to avoid certain problems within frequentist statistics, such as using a hard cut-off value to decide whether an effect is significant or not (leading to many other issues, including publication bias). Both methods are prone to errors, whether it be due to wrongful interpretation or complexity in getting estimates, but both, if used correctly, also have their merits. 
+
